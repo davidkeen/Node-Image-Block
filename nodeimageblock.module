@@ -1,0 +1,494 @@
+<?php
+
+/* $Id$
+ *
+ * Copyright (C) 2007-2008 Thomas Barregren.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+ 
+ 
+/**
+ * @file
+ * Node Image Block 2 – a Drupal module that provides a block that displays
+ * all images attached to a node.
+ *
+ * Node Image Block 2 is developed by Thomas Barregren. It is a complete
+ * rewrite of the original Node Image Block developed by Mike Carter.
+ *
+ * Author:
+ *   Thomas Barregren <http://drupal.org/user/16678>
+ */
+ 
+ 
+/******************************************************************************
+ * THEMEABLE FUNCTIONS
+ ******************************************************************************/
+
+/**
+ * Themeable function for the container of the images to be viewed.
+ *
+ * @param images
+ *   An array of image objects. An image object has following attributes:
+ *     - src:
+ *         The path to the image to be shown. If an imagecache preset has been
+ *         chosen in the block settings, this path will reflect that preset.
+ *         Otherwise it is the same as the path to uploaded image.
+ *     - path: 
+ *         The path to the originally uploaded image.
+ *     - desc:
+ *         An description of the image as given in the node's file attachement
+ *         fieldset.
+ */
+function theme_nodeimageblock($images) {
+
+  global $theme_engine;
+  
+  // If the current theme engine is PHPTemplate and the current theme has a
+  // Node Image Block 2 template file, process the provided template file, and
+  // return the resulting output. Otherwise, return the default theming.
+  if ($theme_engine == 'phptemplate' && file_exists(path_to_theme() .'/nodeimageblock.tpl.php')) {
+    //$out = _phptemplate_callback('nodeimageblock', array('images' => $images));
+    $out = theme_render_template(path_to_theme() . '/nodeimageblock.tpl.php', array('images' => $images));
+  }
+  else {
+
+    $out[] = '<div id="nodeimageblock">';
+    foreach ($images as $img) {
+      $out[] = '  <div>';
+      $out[] = '    <img src="'. $img->src .'" alt="'. $img->desc .'" title="'. $img->desc .'" />';
+      $out[] = '    <p>'. $img->desc .'</p>';
+      $out[] = '  </div>';
+    }
+    $out[] = '</div>';
+    $out = implode("\n", $out);
+  }
+
+  return $out;
+
+}
+
+
+/******************************************************************************
+ * CONSTANTS
+ ******************************************************************************/
+
+/**
+ * Bitwise flag for viewing images that are checked in the node's file
+ * attachement fieldset to be listed.
+ */
+define('NODEIMAGEBLOCK_INCLUDE_LISTED', 0x01);
+
+/**
+ * Bitwise flag for viewing images that are not checked in the node's file
+ * attachement fieldset to be listed.
+ */
+define('NODEIMAGEBLOCK_INCLUDE_NOT_LISTED', 0x02);
+
+
+/******************************************************************************
+ * HOOKS
+ ******************************************************************************/
+
+/**
+ * Implementation of hook_block().
+ */
+function nodeimageblock_block($op, $delta = 0, $edit = array()) {
+  $function = 'nodeimageblock_block_'. $op;
+  if (function_exists($function)) {
+    return $function($delta, $edit);
+  }
+}
+
+/**
+ * Implementation of hook_help().
+ */
+function nodeimageblock_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#nodeimageblock':
+      return _nodeimageblock_help();
+  }
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function nodeimageblock_theme() {
+  return array(
+    'nodeimageblock' => array(
+      'arguments' => array('images' => NULL)
+    )
+  );
+}
+
+/******************************************************************************
+ * IMPLEMENTATION OF THE BLOCK API
+ ******************************************************************************/
+
+/**
+ * Implements the 'list' operator of te hook_block().
+ */
+function nodeimageblock_block_list() {
+  $block[0]['info'] = 'Node Image Block 2';
+  return $block;
+}
+
+/**
+ * Implements the 'configure' operator of te hook_block().
+ */
+function nodeimageblock_block_configure($delta) {
+
+  // Ask for which images to include.
+  $options = array(
+    NODEIMAGEBLOCK_INCLUDE_LISTED | NODEIMAGEBLOCK_INCLUDE_NOT_LISTED => 'All attached images',
+    NODEIMAGEBLOCK_INCLUDE_LISTED => 'Only attached images that are listed',
+    NODEIMAGEBLOCK_INCLUDE_NOT_LISTED => 'Only attached images that are not listed',
+  );
+  $form[nodeimageblock_images_to_include] = array(
+    '#type' => 'select',
+    '#title' => 'Images to show',
+    '#description' => 'Select which attached images to show.',
+    '#options' => $options,
+    '#default_value' => nodeimageblock_variable_images_to_include(),
+  );
+
+  // Ask for imagecache preset to use (if any).
+  if (module_exists('imagecache')) {
+    $options = _imagecache_get_presets();
+    $options[0] = t('<none>');
+    ksort($options);
+    $form[nodeimageblock_imagecahce_preset] = array(
+      '#type' => 'select',
+      '#title' => 'Imagecache preset',
+      '#description' => 'Select the Imagecache preset to use for the images in the Node Image Block 2.',
+      '#options' => $options,
+      '#default_value' => nodeimageblock_variable_imagecahce_preset(),
+    );
+  }
+
+  return $form;
+
+}
+
+/**
+ * Implements the 'save' operator of te hook_block().
+ */
+function nodeimageblock_block_save($delta, $edit) {
+  nodeimageblock_variable_images_to_include($edit['nodeimageblock_images_to_include']);
+  nodeimageblock_variable_imagecahce_preset($edit['nodeimageblock_imagecahce_preset']);
+}
+
+/**
+ * Implements the 'view' operator of te hook_block().
+ */
+function nodeimageblock_block_view($delta) {
+
+  // Abort if the page viewed isn't a node.
+  if (arg(0) != 'node' || !is_numeric($nid = arg(1))) return;
+  
+  // Load the images. Abort if there are no images.
+  if (!($images = _nodeimageblock_images($nid))) return;
+  
+  // Get the base path for the original file path and the source path.
+  $path_base = base_path();
+  $src_base = _nodeimageblock_source_base();
+
+  // Build the image objects that will be passed into the themable function.
+  foreach ($images as $image) {
+    $item = new stdClass();
+    $item->path = "$path_base$image->filepath";
+    $item->desc = $image->description;
+    $item->src = "$src_base$image->filepath";
+    $items[] = $item;
+  }
+
+  // Theme and return the block.
+  $block['subject'] = '';
+
+  $block['content'] = theme('nodeimageblock', $items);
+
+  return $block;
+
+}
+
+/**
+ * Returns an array of file object representing image files attached to the
+ * node id $nid.
+ */
+function _nodeimageblock_images($nid) {
+  if (($files = module_invoke('upload', 'load', node_load($nid)))) {
+    return array_filter($files, '_nodeimageblock_images_filter');
+  }
+}
+
+/**
+ * Returns true if $file is an image which should be viewed.
+ */
+function _nodeimageblock_images_filter($file) {
+  static $image_mime = array("image/gif", "image/png", "image/jpeg", "image/pjpeg");
+  $flags = nodeimageblock_variable_images_to_include();
+  return in_array($file->filemime, $image_mime) && ($flags & NODEIMAGEBLOCK_INCLUDE_LISTED && $file->list || $flags & NODEIMAGEBLOCK_INCLUDE_NOT_LISTED && !$file->list);
+}
+
+/**
+ * Returns the base path of the images.
+ */
+function _nodeimageblock_source_base() {
+  $base_path = base_path();
+  $preset = nodeimageblock_variable_imagecahce_preset();
+  if ($preset && module_exists('imagecache')) {
+    $preset = _imagecache_preset_load($preset);
+    $base_path .= file_directory_path() ."/imagecache/$preset/";
+  }
+  return $base_path;
+}
+
+
+/******************************************************************************
+ * PERSISTED VARIABLES
+ *****************************************************************************/
+
+/**
+ * The persisted variable 'images_to_include' contains the flags indicating
+ * which images to be included.
+ */
+function nodeimageblock_variable_images_to_include($include = null) {
+  return _nodeimageblock_variable('nodeimageblock_images_to_include', $include, NODEIMAGEBLOCK_INCLUDE_LISTED | NODEIMAGEBLOCK_INCLUDE_NOT_LISTED);
+}
+
+/**
+ * The persisted variable 'preset' containing the selected imagecache preset.
+ */
+function nodeimageblock_variable_imagecahce_preset($preset = null) {
+  return _nodeimageblock_variable('nodeimageblock_imagecahce_preset', $preset, 0);
+}
+
+/**
+ * Sets and gets the named persisted variable.
+ */
+function _nodeimageblock_variable($name, $value = null, $default = null) {
+  if (isset($value)) {
+    variable_set($name, $value);
+  }
+  return variable_get($name, $default);
+}
+
+
+/******************************************************************************
+ * HELP
+ *****************************************************************************/
+
+/**
+ * Returns full help text.
+ */
+function _nodeimageblock_help() {
+  $help = <<<EOT
+    <!-- Copyright (C) !year Thomas Barregren <mailto:thomas@webbredaktoren.se> -->
+    <style type="text/css" media="all">
+/*<![CDATA[*/
+      code, kbd, pre { padding: 1px; font-family: "Bitstream Vera Sans Mono", Monaco, "Lucida Console", monospace; background-color: #EDF1F3; }
+    /*]]>*/
+    </style>
+    <p>
+      <a href="http://drupal.org/node/48676">Node Image Block 2</a> is a Drupal module that provides a block that displays all images attached to a node.
+    </p><!--break-->
+    <h2>
+      Requirements
+    </h2>
+    <p>
+      To install Node Image Block 2 you need:
+    </p>
+    <ul>
+      <li>
+        <a href="http://drupal.org/project/drupal">Drupal 5.x</a>
+      </li>
+      <li>
+        <a href="http://drupal.org/handbook/modules/upload">Upload module</a>
+      </li>
+    </ul>
+    <h2>
+      Installation
+    </h2>
+    <p>
+      Install Node Image Block 2 as follows:
+    </p>
+    <ol>
+      <li>
+        <p>
+          Enable and configure the <a href="http://drupal.org/handbook/modules/upload">Upload module</a>, following the instructions for that module.
+        </p>
+      </li>
+      <li>
+        <p>
+          Download the latest stable version of Node Image Block 2 from its <a href="http://drupal.org/node/48676">project page</a>.
+        </p>
+      </li>
+      <li>
+        <p>
+          Unpack the downloaded file into <code>sites/all/modules</code> or the modules directory of your site.
+        </p>
+      </li>
+      <li>
+        <p>
+          Go to <a href="/admin/build/modules">Administer » Site building » Modules</a> and enable the module.
+        </p>
+      </li>
+    </ol>
+    <h2>
+      Configuration
+    </h2>
+    <p>
+      Node Image Block 2 is configured as described below:
+    </p>
+    <ol>
+      <li>
+        <p>
+          Go to <a href="/admin/build/block">Administer » Site building » Blocks</a> and enable <em>Node Image Block 2</em>.
+        </p>
+      </li>
+      <li>
+        <p>
+          Click on the <a href="/admin/build/block/configure/nodeimageblock/0">configure</a> link of Node Image Block 2, and locate the <em>Block specific settings</em>.
+        </p>
+      </li>
+      <li>
+        <p>
+          Enter the title of the block in the text field called <em>Block title</em>. Leave empty (or write <code>&lt;none&gt;</code>) for no title.
+        </p>
+      </li>
+      <li>
+        <p>
+          In the drop down menu called <em>Images to show</em>, choose whether to display all images or only those images that are checked or those not checked to be included in the Upload module's list of attached files.
+        </p>
+      </li>
+      <li>
+        <p>
+          Make sure the remaning block settings are as desired, and press the <em>Save block</em> button.
+        </p>
+      </li>
+    </ol>
+    <p>
+      If the <a href="http://drupal.org/project/imagecache">Imagecache module</a> is installed, there is a third settings available in the <em>Block specific settings</em>. It is configured as follows:
+    </p>
+    <ol>
+      <li>
+        <p>
+          If not already existing, go to <a href="/admin/settings/imagecache">Administer » Site configuration » Image cache</a> and add at least one preset that can be used to generate and cache resized and/or cropped versions of the images to be displayed. Return to the <a href="/admin/build/block/configure/nodeimageblock/0">configuration page</a> of Node Image Block 2. 
+        </p>
+        <p>
+          In the drop down menu called <em>Imagecache preset</em>, choose the preset to use on the images displayed by Node Image Block 2.
+        </p>
+      </li>
+    </ol>
+    <h2>
+      Usage
+    </h2>
+    <p>
+      It is trivial to use Node Image Block 2. Just upload one or more images to the node. For each image to be displeyd, enter a description and make sure that the <em>List</em> checkbox is set according to the Node Image Block 2 settings.
+    </p>
+    <h2>
+      Theming
+    </h2>
+    <p>
+      The default theming of Node Image Block 2 follows:
+    </p>
+<pre>
+  &lt;div id="nodeimageblock"&gt;
+    &lt;div&gt;
+      &lt;img src="<em>\$src</em>" alt="<em>\$desc</em>" title="<em>\$desc</em>" /&gt;
+      &lt;p&gt;<em>\$desc</em>&lt;/p&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+</pre>
+    <p>
+      where the inner <code>&lt;div&gt;</code>-block is repeared for each image to be displayed. <code><em>\$src</em></code> is the path to the image to be displayed and <code><em>\$desc</em></code> is the description of the image.
+    </p>
+    <h3>
+      Template file
+    </h3>
+    <p>
+      The easiest way to change this theming, is to copy <code>nodeimageblock.tpl.php</code> from the folder with the Node Image Block 2 module, e.g. <code>site/all/modules/nodeimageblock</code>, to the folder containing the theme's <code>page.tpl.php</code> and edit is as needed. This works for all themes based on the built-in <a href="http://drupal.org/phptemplate">PHPTemplate theme engine</a>.
+    </p>
+    <h3>
+      Themable function
+    </h3>
+    <p>
+      For advanced themers, and themes not based on the PHPTemplate theme engine, it is possible to override the themable function <code>theme_nodeimageblock(\$images)</code>, where <code>\$images</code> is an array of of image objects. Each image object has following attributes:
+    </p>
+    <dl>
+      <dt><code>\$src</code></dt>
+      <dd>
+        <p>
+          The path to the image to be shown. If an imagecache preset has been chosen in the block settings, this path will reflect that preset. Otherwise it is the same as the path to uploaded image.
+        </p>
+      </dd>
+      <dt><code>\$path</code></dt>
+      <dd>
+        <p>
+          The path to the originally uploaded image.
+        </p>
+      </dd>
+      <dt><code>\$desc</code></dt>
+      <dd>
+        <p>
+          A description of the image as given in the node's file attachement fieldset.
+        </p>
+      </dd>
+      </li>
+    </dl>
+    <p>
+      The default implementation returns the default theming described in the previous subsection.
+    </p>
+    <h2>
+      Author
+    </h2>
+    <p>
+     Node Image Block 2 is developed by <a href="http://drupal.org/user/16678">Thomas Barregren</a>. The author can be contacted for paid customizations of this module as well as Drupal consulting, installation, development, and customizations.
+    </p>
+    <p>
+      The development of Node Image Block 2 has been sponsored by
+    </p>
+    <ul>
+      <li><a href="http://www.sspa.se/">SSPA</a>, and</li>
+      <li><a href="http://www.webbredaktoren.se/">Webbredaktören</a>.</li>
+    </ul>
+    <h2>
+      Credits
+    </h2>
+    <p>
+      This module is a complete rewrite of the original Node Image Block developed by <a href="http://drupal.org/user/13164">Mike Carter</a>.
+    </p>
+    <h2>
+      License
+    </h2>
+    <p>
+      Node Image Block 2 !version. Copyright © 2007–!year <a href="http://drupal.org/user/16678">Thomas Barregren</a>.
+    </p>
+    <p>
+      Node Image Block 2 is free software; you can redistribute it and/or modify it under the terms of the <a href="http://www.gnu.org/licenses/gpl.html#SEC1">GNU General Public License</a> as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.
+    </p>
+    <p>
+      Node Image Block 2 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the <a href="http://www.gnu.org/licenses/gpl.html#SEC1">GNU General Public License</a> for more details.
+    </p>
+    <p>
+      You should have received a copy of the <a href="http://www.gnu.org/licenses/gpl.html#SEC1">GNU General Public License</a> along with this program; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+    </p>
+EOT;
+
+  $version = str_replace(array('$Re'.'vision:', ' $'), array('', ''), '$Revision: 2.x $');
+  $year = substr('$Date: 2008/01/03 00:00:00 $', 7, 4);
+  return t($help, array('!version' => $version, '!year' => $year));
+  
+}

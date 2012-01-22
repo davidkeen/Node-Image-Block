@@ -1,0 +1,13 @@
+; $Id: nodeimageblock.info,v 1.1.2.3 2008/01/03 19:51:57 tbarregren Exp $
+name = "Node Image Block 2"
+description = "Provides a block that displays all images attached to a node."
+package = "Image"
+dependencies[] = upload
+
+; Information added by drupal.org packaging script on 2008-01-03
+version = "6.x-2.1"
+project = "nodeimageblock"
+datestamp = "1199390708"
+
+
+core = 6.x
